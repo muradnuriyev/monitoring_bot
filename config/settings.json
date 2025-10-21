@@ -1,0 +1,8 @@
+{
+  "headless": false,
+  "scroll_delay": 2,
+  "max_scrolls": 10,
+  "wait_for_page": 5,
+  "keep_browser_open": true,
+  "preferred_size": "M 11 / W 12.5"
+}
