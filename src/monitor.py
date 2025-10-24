@@ -54,14 +54,22 @@ def _expand_monitor_urls(url):
     """Return list of URLs to monitor for a product.
 
     Nike launches often flip between `/launch/upcoming` and `/launch/in-stock`.
-    When the product is supplied with the former we proactively watch both
-    endpoints so we can react immediately once it becomes buyable.
+    Regardless of which variant the user supplied, watch both endpoints so we
+    can react immediately once it becomes buyable.
     """
     urls = [url]
+
+    upcoming_variant = None
+    instock_variant = None
     if "/launch/upcoming" in url:
-        alt = url.replace("/launch/upcoming", "/launch/in-stock")
-        if alt not in urls:
-            urls.append(alt)
+        instock_variant = url.replace("/launch/upcoming", "/launch/in-stock")
+    if "/launch/in-stock" in url:
+        upcoming_variant = url.replace("/launch/in-stock", "/launch/upcoming")
+
+    for candidate in (upcoming_variant, instock_variant):
+        if candidate and candidate not in urls:
+            urls.append(candidate)
+
     return urls
 
 
@@ -69,6 +77,7 @@ def check_product_and_buy(url, product_name, settings, cc_info, preferred_size=N
     urls_to_monitor = _expand_monitor_urls(url)
     log.info(f"[INFO] Monitoring {product_name} at: {', '.join(urls_to_monitor)}")
     driver = create_driver(settings)
+    purchase_initiated = False
     try:
         try:
             driver.get(urls_to_monitor[0])
@@ -79,9 +88,12 @@ def check_product_and_buy(url, product_name, settings, cc_info, preferred_size=N
         log.info(f"[INFO] Navigated to {urls_to_monitor[0]}")
         time.sleep(settings.get("wait_for_page", 3))
 
-        # continuous monitoring loop; stops when product buy flow triggered
+        # continuous monitoring loop; only stops when user interrupts or driver irrecoverably fails
+        cycle = 0
         while True:
             try:
+                cycle += 1
+                log.info(f"[INFO] Scan cycle {cycle} starting.")
                 for idx, target_url in enumerate(urls_to_monitor):
                     is_primary = idx == 0
                     label = "primary" if is_primary else "alternate"
@@ -93,8 +105,11 @@ def check_product_and_buy(url, product_name, settings, cc_info, preferred_size=N
                             log.error(f"[ERROR] Failed to navigate to {target_url}: {nav_err}")
                             continue
                         time.sleep(settings.get("wait_for_page", 3))
-                    else:
-                        log.info(f"[INFO] Checking {label} page: {target_url}")
+                    log.info(f"[INFO] Scanning {label} page: {target_url}")
+
+                    if purchase_initiated:
+                        log.info("[INFO] Purchase already initiated; keeping browser open and continuing passive monitoring.")
+                        continue
 
                     log.info("[INFO] Checking for product availability...")
                     initiated = find_product_and_buy(
@@ -105,17 +120,20 @@ def check_product_and_buy(url, product_name, settings, cc_info, preferred_size=N
                         cc_info=cc_info,
                     )
                     if initiated:
+                        purchase_initiated = True
                         log.info(f"✅ Product '{product_name}' buy flow initiated.")
-                        log.info("[INFO] Leaving browser open for manual/visual confirmation.")
-                        return True
+                        log.info("[INFO] Continuing to keep the session active until you stop monitoring.")
 
-                log.info(f"⏳ Product '{product_name}' not yet buyable. Refreshing and retrying...")
-                time.sleep(settings.get("retry_delay", 8))
-                driver.refresh()
-                time.sleep(settings.get("wait_for_page", 2))
+                if not purchase_initiated:
+                    log.info(f"⏳ Product '{product_name}' not yet buyable after cycle {cycle}. Refreshing and retrying...")
+                    time.sleep(settings.get("retry_delay", 8))
+                    driver.refresh()
+                    time.sleep(settings.get("wait_for_page", 2))
+                else:
+                    time.sleep(settings.get("post_purchase_idle", 15))
             except KeyboardInterrupt:
                 log.info("[INFO] Monitoring stopped by user.")
-                return False
+                return purchase_initiated
             except Exception as e:
                 log.error(f"[ERROR] Exception during monitoring: {e}")
                 # attempt to recover by refreshing / short sleep; preserve driver so user can see logs
