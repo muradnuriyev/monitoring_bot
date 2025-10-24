@@ -154,6 +154,43 @@ def find_global_add_to_cart(driver):
         pass
     return None
 
+
+def proceed_to_checkout(driver, settings=None):
+    """Attempt to follow any checkout/view-cart CTA after adding to bag."""
+    wait_time = (settings or {}).get("checkout_cta_timeout", 10)
+    poll_interval = 0.6
+    end_time = time.time() + wait_time
+    checkout_patterns = [
+        r"checkout", r"bag", r"view bag", r"view cart", r"go to cart",
+        r"proceed", r"continue to checkout", r"buy now", r"pay"
+    ]
+
+    while time.time() < end_time:
+        try:
+            ctas = driver.find_elements(By.XPATH, "//button | //a")
+        except Exception:
+            ctas = []
+
+        for cta in ctas:
+            try:
+                if not cta.is_displayed():
+                    continue
+                txt = safe_get_text(cta).lower()
+                outer = (cta.get_attribute("outerHTML") or "").lower()
+                if any(re.search(pattern, txt) or re.search(pattern, outer) for pattern in checkout_patterns):
+                    highlight_element(driver, cta, color="orange", duration=0.8)
+                    if safe_click(driver, cta, desc="checkout_transition"):
+                        log.info("[ai_detector] Checkout/View Cart CTA clicked; waiting for checkout page...")
+                        time.sleep((settings or {}).get("post_checkout_click_wait", 2))
+                        return True
+            except Exception:
+                continue
+
+        time.sleep(poll_interval)
+
+    log.info("[ai_detector] No checkout/view-cart CTA detected after adding to cart.")
+    return False
+
 def find_product_and_buy(driver, product_name: str, preferred_size: str = None, settings: dict = None, cc_info: dict = None) -> bool:
     """
     Full universal flow:
@@ -214,13 +251,13 @@ def find_product_and_buy(driver, product_name: str, preferred_size: str = None, 
                     highlight_element(driver, add_btn, color="lime", duration=0.8)
                     if safe_click(driver, add_btn, desc="pdp_add_to_cart"):
                         log.info("[ai_detector] PDP Add/Buy clicked.")
-                        # optionally attempt autofill checkout if cc_info provided
+                        progressed = proceed_to_checkout(driver, settings=settings)
                         if cc_info:
                             # delegate to form filler (import at runtime to avoid cycles)
                             try:
                                 from src.form_filler import fill_and_submit_form
-                                # small wait to let cart/modal appear
-                                time.sleep(1.2)
+                                # small wait to let checkout elements stabilise
+                                time.sleep(1.2 if progressed else 0.8)
                                 fill_and_submit_form(driver, cc_info, settings=settings)
                             except Exception as e:
                                 log.warning(f"[ai_detector] Autofill/checkout failed: {e}")
