@@ -84,8 +84,6 @@ def check_product_and_buy(url, product_name, settings, cc_info, preferred_size=N
         cycle = 0
         while True:
             try:
-                cycle += 1
-                log.info(f"[INFO] Scan cycle {cycle} starting.")
                 for idx, target_url in enumerate(urls_to_monitor):
                     is_primary = idx == 0
                     label = "primary" if is_primary else "alternate"
@@ -97,11 +95,8 @@ def check_product_and_buy(url, product_name, settings, cc_info, preferred_size=N
                             log.error(f"[ERROR] Failed to navigate to {target_url}: {nav_err}")
                             continue
                         time.sleep(settings.get("wait_for_page", 3))
-                    log.info(f"[INFO] Scanning {label} page: {target_url}")
-
-                    if purchase_initiated:
-                        log.info("[INFO] Purchase already initiated; keeping browser open and continuing passive monitoring.")
-                        continue
+                    else:
+                        log.info(f"[INFO] Checking {label} page: {target_url}")
 
                     log.info("[INFO] Checking for product availability...")
                     initiated = find_product_and_buy(
@@ -112,17 +107,14 @@ def check_product_and_buy(url, product_name, settings, cc_info, preferred_size=N
                         cc_info=cc_info,
                     )
                     if initiated:
-                        purchase_initiated = True
                         log.info(f"✅ Product '{product_name}' buy flow initiated.")
-                        log.info("[INFO] Continuing to keep the session active until you stop monitoring.")
+                        log.info("[INFO] Leaving browser open for manual/visual confirmation.")
+                        return True
 
-                if not purchase_initiated:
-                    log.info(f"⏳ Product '{product_name}' not yet buyable after cycle {cycle}. Refreshing and retrying...")
-                    time.sleep(settings.get("retry_delay", 8))
-                    driver.refresh()
-                    time.sleep(settings.get("wait_for_page", 2))
-                else:
-                    time.sleep(settings.get("post_purchase_idle", 15))
+                log.info(f"⏳ Product '{product_name}' not yet buyable. Refreshing and retrying...")
+                time.sleep(settings.get("retry_delay", 8))
+                driver.refresh()
+                time.sleep(settings.get("wait_for_page", 2))
             except KeyboardInterrupt:
                 log.info("[INFO] Monitoring stopped by user.")
                 return purchase_initiated
