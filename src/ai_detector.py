@@ -167,6 +167,7 @@ def find_product_and_buy(driver, product_name: str, preferred_size: str = None, 
     target = product_name.strip().lower()
     max_scrolls = settings.get("max_scrolls", 10) if settings else 10
     scroll_delay = settings.get("scroll_delay", 1.0) if settings else 1.0
+    min_score = settings.get("min_match_score", 0.9) if settings else 0.9
 
     best_match = None
     best_score = 0.0
@@ -182,7 +183,7 @@ def find_product_and_buy(driver, product_name: str, preferred_size: str = None, 
                 best_match = (el, text, score)
         log.info(f"[ai_detector] Best score so far: {best_score:.2f}")
 
-        if best_match and best_score >= 0.70:
+        if best_match and best_score >= min_score:
             el, text, score = best_match
             log.info(f"[ai_detector] Possible match (score={score:.2f}): {text[:120]}...")
             highlight_element(driver, el, color="cyan", duration=1.0)
@@ -228,6 +229,10 @@ def find_product_and_buy(driver, product_name: str, preferred_size: str = None, 
                     log.info("[ai_detector] No add-to-cart CTA found on PDP after opening.")
             # if not clickable / PDP not opened, keep scanning / scroll
             log.info("[ai_detector] Will continue scanning / scrolling.")
+        elif best_match:
+            log.info(
+                f"[ai_detector] Best fuzzy score {best_score:.2f} below threshold {min_score:.2f}; continuing scan."
+            )
         # scroll to load more content
         try:
             driver.execute_script("window.scrollBy(0, Math.round(window.innerHeight * 0.9));")

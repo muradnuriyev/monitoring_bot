@@ -50,37 +50,82 @@ def create_driver(settings):
     raise RuntimeError(f"Failed to create Chrome driver after retries: {last_error}")
 
 
+def _expand_monitor_urls(url):
+    """Return list of URLs to monitor for a product.
+
+    Nike launches often flip between `/launch/upcoming` and `/launch/in-stock`.
+    When the product is supplied with the former we proactively watch both
+    endpoints so we can react immediately once it becomes buyable.
+    """
+    urls = [url]
+    if "/launch/upcoming" in url:
+        alt = url.replace("/launch/upcoming", "/launch/in-stock")
+        if alt not in urls:
+            urls.append(alt)
+    return urls
+
+
 def check_product_and_buy(url, product_name, settings, cc_info, preferred_size=None):
-    log.info(f"[INFO] Opening {url}")
+    urls_to_monitor = _expand_monitor_urls(url)
+    log.info(f"[INFO] Monitoring {product_name} at: {', '.join(urls_to_monitor)}")
     driver = create_driver(settings)
+    purchase_initiated = False
     try:
         try:
-            driver.get(url)
+            driver.get(urls_to_monitor[0])
         except Exception as e:
-            log.error(f"[ERROR] Failed to load {url}: {e}")
+            log.error(f"[ERROR] Failed to load {urls_to_monitor[0]}: {e}")
             return False
 
-        log.info(f"[INFO] Navigated to {url}")
+        log.info(f"[INFO] Navigated to {urls_to_monitor[0]}")
         time.sleep(settings.get("wait_for_page", 3))
 
-        # continuous monitoring loop; stops when product buy flow triggered
+        # continuous monitoring loop; only stops when user interrupts or driver irrecoverably fails
+        cycle = 0
         while True:
             try:
-                log.info("[INFO] Checking for product availability...")
-                initiated = find_product_and_buy(driver, product_name, preferred_size, settings=settings, cc_info=cc_info)
-                if initiated:
-                    log.info(f"✅ Product '{product_name}' buy flow initiated.")
-                    log.info("[INFO] Leaving browser open for manual/visual confirmation.")
-                    # don't quit; let user visually confirm.
-                    return True
-                else:
-                    log.info(f"⏳ Product '{product_name}' not yet buyable. Refreshing page...")
+                cycle += 1
+                log.info(f"[INFO] Scan cycle {cycle} starting.")
+                for idx, target_url in enumerate(urls_to_monitor):
+                    is_primary = idx == 0
+                    label = "primary" if is_primary else "alternate"
+                    if driver.current_url != target_url:
+                        log.info(f"[INFO] Switching to {label} page: {target_url}")
+                        try:
+                            driver.get(target_url)
+                        except Exception as nav_err:
+                            log.error(f"[ERROR] Failed to navigate to {target_url}: {nav_err}")
+                            continue
+                        time.sleep(settings.get("wait_for_page", 3))
+                    log.info(f"[INFO] Scanning {label} page: {target_url}")
+
+                    if purchase_initiated:
+                        log.info("[INFO] Purchase already initiated; keeping browser open and continuing passive monitoring.")
+                        continue
+
+                    log.info("[INFO] Checking for product availability...")
+                    initiated = find_product_and_buy(
+                        driver,
+                        product_name,
+                        preferred_size,
+                        settings=settings,
+                        cc_info=cc_info,
+                    )
+                    if initiated:
+                        purchase_initiated = True
+                        log.info(f"✅ Product '{product_name}' buy flow initiated.")
+                        log.info("[INFO] Continuing to keep the session active until you stop monitoring.")
+
+                if not purchase_initiated:
+                    log.info(f"⏳ Product '{product_name}' not yet buyable after cycle {cycle}. Refreshing and retrying...")
                     time.sleep(settings.get("retry_delay", 8))
                     driver.refresh()
                     time.sleep(settings.get("wait_for_page", 2))
+                else:
+                    time.sleep(settings.get("post_purchase_idle", 15))
             except KeyboardInterrupt:
                 log.info("[INFO] Monitoring stopped by user.")
-                return False
+                return purchase_initiated
             except Exception as e:
                 log.error(f"[ERROR] Exception during monitoring: {e}")
                 # attempt to recover by refreshing / short sleep; preserve driver so user can see logs
