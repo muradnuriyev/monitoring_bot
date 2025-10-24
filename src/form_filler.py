@@ -82,28 +82,35 @@ def try_fill_simple_inputs(driver, cc_info):
                         except Exception:
                             continue
                 # address / city / zip
-                if "address" in k.lower() or "address" in field_ident:
+                address_val = cc_info.get("address")
+                city_val = cc_info.get("city")
+                zip_val = cc_info.get("zip") or cc_info.get("postal")
+
+                if address_val and "address" in field_ident:
                     try:
                         inp.clear()
-                        inp.send_keys(cc_info.get("address", ""))
+                        inp.send_keys(address_val)
                         filled += 1
                         log.info("[form_filler] Filled address.")
+                        continue
                     except Exception:
                         pass
-                if "city" in k.lower() or "city" in field_ident:
+                if city_val and "city" in field_ident:
                     try:
                         inp.clear()
-                        inp.send_keys(cc_info.get("city", ""))
+                        inp.send_keys(city_val)
                         filled += 1
                         log.info("[form_filler] Filled city.")
+                        continue
                     except Exception:
                         pass
-                if "zip" in k.lower() or "postal" in field_ident or "zip" in field_ident:
+                if zip_val and ("zip" in field_ident or "postal" in field_ident):
                     try:
                         inp.clear()
-                        inp.send_keys(cc_info.get("zip", ""))
+                        inp.send_keys(zip_val)
                         filled += 1
                         log.info("[form_filler] Filled zip/postal.")
+                        continue
                     except Exception:
                         pass
             except Exception:

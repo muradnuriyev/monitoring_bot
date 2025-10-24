@@ -154,6 +154,43 @@ def find_global_add_to_cart(driver):
         pass
     return None
 
+
+def proceed_to_checkout(driver, settings=None):
+    """Attempt to follow any checkout/view-cart CTA after adding to bag."""
+    wait_time = (settings or {}).get("checkout_cta_timeout", 10)
+    poll_interval = 0.6
+    end_time = time.time() + wait_time
+    checkout_patterns = [
+        r"checkout", r"bag", r"view bag", r"view cart", r"go to cart",
+        r"proceed", r"continue to checkout", r"buy now", r"pay"
+    ]
+
+    while time.time() < end_time:
+        try:
+            ctas = driver.find_elements(By.XPATH, "//button | //a")
+        except Exception:
+            ctas = []
+
+        for cta in ctas:
+            try:
+                if not cta.is_displayed():
+                    continue
+                txt = safe_get_text(cta).lower()
+                outer = (cta.get_attribute("outerHTML") or "").lower()
+                if any(re.search(pattern, txt) or re.search(pattern, outer) for pattern in checkout_patterns):
+                    highlight_element(driver, cta, color="orange", duration=0.8)
+                    if safe_click(driver, cta, desc="checkout_transition"):
+                        log.info("[ai_detector] Checkout/View Cart CTA clicked; waiting for checkout page...")
+                        time.sleep((settings or {}).get("post_checkout_click_wait", 2))
+                        return True
+            except Exception:
+                continue
+
+        time.sleep(poll_interval)
+
+    log.info("[ai_detector] No checkout/view-cart CTA detected after adding to cart.")
+    return False
+
 def find_product_and_buy(driver, product_name: str, preferred_size: str = None, settings: dict = None, cc_info: dict = None) -> bool:
     """
     Full universal flow:
@@ -167,6 +204,7 @@ def find_product_and_buy(driver, product_name: str, preferred_size: str = None, 
     target = product_name.strip().lower()
     max_scrolls = settings.get("max_scrolls", 10) if settings else 10
     scroll_delay = settings.get("scroll_delay", 1.0) if settings else 1.0
+    min_score = settings.get("min_match_score", 0.9) if settings else 0.9
 
     best_match = None
     best_score = 0.0
@@ -182,7 +220,7 @@ def find_product_and_buy(driver, product_name: str, preferred_size: str = None, 
                 best_match = (el, text, score)
         log.info(f"[ai_detector] Best score so far: {best_score:.2f}")
 
-        if best_match and best_score >= 0.70:
+        if best_match and best_score >= min_score:
             el, text, score = best_match
             log.info(f"[ai_detector] Possible match (score={score:.2f}): {text[:120]}...")
             highlight_element(driver, el, color="cyan", duration=1.0)
@@ -213,13 +251,13 @@ def find_product_and_buy(driver, product_name: str, preferred_size: str = None, 
                     highlight_element(driver, add_btn, color="lime", duration=0.8)
                     if safe_click(driver, add_btn, desc="pdp_add_to_cart"):
                         log.info("[ai_detector] PDP Add/Buy clicked.")
-                        # optionally attempt autofill checkout if cc_info provided
+                        progressed = proceed_to_checkout(driver, settings=settings)
                         if cc_info:
                             # delegate to form filler (import at runtime to avoid cycles)
                             try:
                                 from src.form_filler import fill_and_submit_form
-                                # small wait to let cart/modal appear
-                                time.sleep(1.2)
+                                # small wait to let checkout elements stabilise
+                                time.sleep(1.2 if progressed else 0.8)
                                 fill_and_submit_form(driver, cc_info, settings=settings)
                             except Exception as e:
                                 log.warning(f"[ai_detector] Autofill/checkout failed: {e}")
@@ -228,6 +266,10 @@ def find_product_and_buy(driver, product_name: str, preferred_size: str = None, 
                     log.info("[ai_detector] No add-to-cart CTA found on PDP after opening.")
             # if not clickable / PDP not opened, keep scanning / scroll
             log.info("[ai_detector] Will continue scanning / scrolling.")
+        elif best_match:
+            log.info(
+                f"[ai_detector] Best fuzzy score {best_score:.2f} below threshold {min_score:.2f}; continuing scan."
+            )
         # scroll to load more content
         try:
             driver.execute_script("window.scrollBy(0, Math.round(window.innerHeight * 0.9));")
