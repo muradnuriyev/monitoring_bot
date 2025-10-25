@@ -5,7 +5,6 @@ import time
 import logging
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 import undetected_chromedriver as uc
 
@@ -14,38 +13,62 @@ from src.ai_detector import find_product_and_buy
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 
+def _build_chrome_options(settings, use_undetected):
+    """Create Chrome options compatible with both selenium and undetected drivers."""
+    options = uc.ChromeOptions() if use_undetected else webdriver.ChromeOptions()
+
+    if settings.get("headless", False):
+        options.add_argument("--headless=new")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-infobars")
+    options.add_argument("--window-size=1400,900")
+    options.add_argument("--remote-debugging-port=9222")
+    options.add_argument("--disable-features=SameSiteByDefaultCookies,CookiesWithoutSameSiteMustBeSecure")
+    # user agent spoofing helps dodge Cloudflare bot heuristics
+    user_agent = settings.get("user_agent")
+    if user_agent:
+        options.add_argument(f"--user-agent={user_agent}")
+
+    if not use_undetected:
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
+
+    return options
+
+
 def create_driver(settings):
     attempts = 0
     last_error = None
+    use_undetected = settings.get("use_undetected", True)
+    fell_back_to_standard = False
     while attempts < 3:
         try:
-            options = webdriver.ChromeOptions()
-            if settings.get("headless", False):
-                options.add_argument("--headless=new")
-            options.add_argument("--disable-blink-features=AutomationControlled")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--disable-infobars")
-            options.add_argument("--window-size=1400,900")
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            options.add_experimental_option('useAutomationExtension', False)
-            options.add_argument("--remote-debugging-port=9222")
-            options.add_argument("--disable-features=SameSiteByDefaultCookies,CookiesWithoutSameSiteMustBeSecure")
+            options = _build_chrome_options(settings, use_undetected)
 
+            if use_undetected:
+                log.info("[INFO] Launching undetected Chrome to bypass Cloudflare checks...")
+                driver = uc.Chrome(options=options, headless=settings.get("headless", False))
+            else:
+                driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+                driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                    "source": """
+                        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    """
+                })
 
-            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                "source": """
-                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                """
-            })
             log.info("[INFO] Chrome launched successfully.")
             return driver
         except Exception as e:
             attempts += 1
             last_error = e
             log.warning(f"[WARN] Launch attempt {attempts} failed: {e}")
+            if use_undetected and not fell_back_to_standard and attempts < 3:
+                log.info("[INFO] Falling back to standard Selenium Chrome driver for next attempt.")
+                use_undetected = False
+                fell_back_to_standard = True
             time.sleep(2)
     raise RuntimeError(f"Failed to create Chrome driver after retries: {last_error}")
 

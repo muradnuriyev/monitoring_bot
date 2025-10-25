@@ -17,7 +17,16 @@ CC_FILE = os.path.join(CONFIG_DIR, "credit_card_info.txt")
 
 def load_settings():
     if not os.path.exists(SETTINGS_FILE):
-        return {"headless": False, "scroll_delay": 2, "max_scrolls": 10, "wait_for_page": 5, "retry_delay": 8}
+        return {
+            "headless": False,
+            "scroll_delay": 2,
+            "max_scrolls": 10,
+            "wait_for_page": 5,
+            "retry_delay": 8,
+            "post_purchase_idle": 15,
+            "use_undetected": True,
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        }
     with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 

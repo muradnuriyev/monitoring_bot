@@ -3,6 +3,10 @@
   "scroll_delay": 2,
   "max_scrolls": 10,
   "wait_for_page": 5,
+  "retry_delay": 8,
   "keep_browser_open": true,
+  "post_purchase_idle": 15,
+  "use_undetected": true,
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   "preferred_size": "M 11 / W 12.5"
 }
