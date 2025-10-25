@@ -15,20 +15,41 @@ PRODUCTS_FILE = os.path.join(CONFIG_DIR, "products.txt")
 SETTINGS_FILE = os.path.join(CONFIG_DIR, "settings.json")
 CC_FILE = os.path.join(CONFIG_DIR, "credit_card_info.txt")
 
+
 def load_settings():
     if not os.path.exists(SETTINGS_FILE):
         return {
             "headless": False,
             "scroll_delay": 2,
-            "max_scrolls": 10,
+            "max_scrolls": 3,
             "wait_for_page": 5,
             "retry_delay": 8,
+            "retry_jitter": 4,
             "post_purchase_idle": 15,
             "use_undetected": True,
             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "min_match_score": 0.7,
+            # compliance & stealth
+            "respect_robots": False,
+            "block_on_robots": True,
+            "accept_language": "en-US,en;q=0.9",
+            "randomize_window": True,
+            "window_width": 1400,
+            "window_height": 900,
+            "user_data_dir": None,
+            "profile_directory": None,
+            "proxy": None,
+            "challenge_strategy": "pause",  # pause | wait | backoff
+            "challenge_pause_seconds": 60,
+            "stop_on_success": True,
+            "dismiss_banners": True,
+            "allow_global_cta_when_name_found": True,
+            "allow_global_cta_always": False,
+            "select_size_before_global": True,
         }
     with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
+
 
 def load_credit_card():
     cc_info = {}
@@ -40,6 +61,7 @@ def load_credit_card():
                 k, v = line.strip().split(":", 1)
                 cc_info[k.strip()] = v.strip()
     return cc_info
+
 
 def load_products():
     prods = []
@@ -61,13 +83,16 @@ def load_products():
                 log.warning(f"[WARN] Skipping malformed products.txt line: {line}")
     return prods
 
+
 def view_products():
     prods = load_products()
     if not prods:
         print("[INFO] No products configured.")
         return
     for i, (u, n, s) in enumerate(prods, start=1):
-        print(f"{i}. {n} — {u} (size: {s})")
+        size_txt = f" (size: {s})" if s else ""
+        print(f"{i}. {n} -> {u}{size_txt}")
+
 
 def add_product():
     url = input("Enter product URL: ").strip()
@@ -78,6 +103,7 @@ def add_product():
         f.write(entry + "\n")
     print("[INFO] Product added.")
 
+
 def start_monitoring():
     prods = load_products()
     if not prods:
@@ -85,7 +111,8 @@ def start_monitoring():
         return
     print("\nSelect a product to monitor:\n")
     for i, (u, n, s) in enumerate(prods, start=1):
-        print(f"{i}. {n} — size: {s}")
+        size_txt = s if s else "-"
+        print(f"{i}. {n} (size: {size_txt})")
     try:
         choice = int(input("\nYour choice: ")) - 1
     except Exception:
@@ -103,6 +130,7 @@ def start_monitoring():
     except KeyboardInterrupt:
         log.info("[INFO] Monitoring stopped by user.")
     time.sleep(1)
+
 
 def main_menu():
     while True:
@@ -129,6 +157,7 @@ def main_menu():
         else:
             print("[ERROR] Invalid option.")
         time.sleep(0.3)
+
 
 if __name__ == "__main__":
     main_menu()

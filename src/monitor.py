@@ -6,6 +6,9 @@ import logging
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
+from urllib.parse import urlparse
+import urllib.robotparser as robotparser
+import random
 import undetected_chromedriver as uc
 
 from src.ai_detector import find_product_and_buy
@@ -24,13 +27,35 @@ def _build_chrome_options(settings, use_undetected):
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-gpu")
     options.add_argument("--disable-infobars")
-    options.add_argument("--window-size=1400,900")
-    options.add_argument("--remote-debugging-port=9222")
+    # window size (optionally small randomization)
+    base_w = int(settings.get("window_width", 1400))
+    base_h = int(settings.get("window_height", 900))
+    if settings.get("randomize_window", True):
+        base_w += random.randint(-40, 40)
+        base_h += random.randint(-30, 30)
+    options.add_argument(f"--window-size={base_w},{base_h}")
+    if settings.get("enable_remote_debugging", False):
+        options.add_argument("--remote-debugging-port=9222")
     options.add_argument("--disable-features=SameSiteByDefaultCookies,CookiesWithoutSameSiteMustBeSecure")
     # user agent spoofing helps dodge Cloudflare bot heuristics
     user_agent = settings.get("user_agent")
     if user_agent:
         options.add_argument(f"--user-agent={user_agent}")
+    # language
+    lang = settings.get("accept_language")
+    if lang:
+        options.add_argument(f"--lang={lang}")
+    # persistent user data dir
+    user_data_dir = settings.get("user_data_dir")
+    if user_data_dir:
+        options.add_argument(f"--user-data-dir={user_data_dir}")
+        profile_dir = settings.get("profile_directory")
+        if profile_dir:
+            options.add_argument(f"--profile-directory={profile_dir}")
+    # proxy
+    proxy = settings.get("proxy")
+    if proxy:
+        options.add_argument(f"--proxy-server={proxy}")
 
     if not use_undetected:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -73,6 +98,74 @@ def create_driver(settings):
     raise RuntimeError(f"Failed to create Chrome driver after retries: {last_error}")
 
 
+def _robots_allows(url: str, user_agent: str = "*"):
+    try:
+        parsed = urlparse(url)
+        robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+        rp = robotparser.RobotFileParser()
+        rp.set_url(robots_url)
+        rp.read()
+        return rp.can_fetch(user_agent, url)
+    except Exception:
+        return True
+
+
+def _detect_challenge(driver) -> str:
+    """Return a string describing detected anti-bot challenge, or '' if none."""
+    try:
+        title = (driver.title or "").lower()
+        outer = (driver.page_source or "").lower()
+    except Exception:
+        return ""
+    signals = [
+        ("cloudflare", any(s in title or s in outer for s in [
+            "checking your browser before accessing",
+            "just a moment",
+            "cf-browser-verification",
+            "attention required",
+            "please stand by",
+        ])),
+        ("captcha", any(s in outer for s in [
+            "captcha",
+            "g-recaptcha",
+            "hcaptcha",
+            "cf-chl-widget",
+        ])),
+    ]
+    for name, present in signals:
+        if present:
+            return name
+    return ""
+
+
+def _handle_detected_challenge(driver, kind: str, settings: dict):
+    """Conservative handler: pause and/or wait; never attempts to solve challenges."""
+    log.warning(f"[WARN] Detected potential anti-bot challenge: {kind}.")
+    action = (settings or {}).get("challenge_strategy", "pause")
+    if action == "pause":
+        log.info("[INFO] Pausing for manual resolution. Leave this tab focused and solve if permitted.")
+        time.sleep(int((settings or {}).get("challenge_pause_seconds", 60)))
+        return
+    if action == "wait":
+        total = int((settings or {}).get("challenge_wait_total", 45))
+        poll = float((settings or {}).get("challenge_wait_poll", 3))
+        waited = 0
+        while waited < total:
+            time.sleep(poll)
+            waited += poll
+            if not _detect_challenge(driver):
+                log.info("[INFO] Challenge cleared during wait.")
+                break
+        return
+    if action == "backoff":
+        delay = int((settings or {}).get("retry_delay", 8))
+        jitter = int((settings or {}).get("retry_jitter", 4))
+        sleep_s = max(1, delay + random.randint(-jitter, jitter))
+        log.info(f"[INFO] Backing off for {sleep_s}s before next attempt.")
+        time.sleep(sleep_s)
+        return
+
+
 def _expand_monitor_urls(url):
     """Return list of URLs to monitor for a product.
 
@@ -99,6 +192,14 @@ def _expand_monitor_urls(url):
 def check_product_and_buy(url, product_name, settings, cc_info, preferred_size=None):
     urls_to_monitor = _expand_monitor_urls(url)
     log.info(f"[INFO] Monitoring {product_name} at: {', '.join(urls_to_monitor)}")
+    # optional robots.txt compliance
+    if settings.get("respect_robots", False):
+        ua = settings.get("user_agent", "*")
+        for candidate in urls_to_monitor:
+            if not _robots_allows(candidate, ua):
+                log.warning(f"[WARN] Blocked by robots.txt for URL: {candidate}")
+                if settings.get("block_on_robots", True):
+                    return False
     driver = create_driver(settings)
     purchase_initiated = False
     try:
@@ -110,6 +211,9 @@ def check_product_and_buy(url, product_name, settings, cc_info, preferred_size=N
 
         log.info(f"[INFO] Navigated to {urls_to_monitor[0]}")
         time.sleep(settings.get("wait_for_page", 3))
+        ch = _detect_challenge(driver)
+        if ch:
+            _handle_detected_challenge(driver, ch, settings)
 
         # continuous monitoring loop; only stops when user interrupts or driver irrecoverably fails
         cycle = 0
@@ -128,6 +232,9 @@ def check_product_and_buy(url, product_name, settings, cc_info, preferred_size=N
                             log.error(f"[ERROR] Failed to navigate to {target_url}: {nav_err}")
                             continue
                         time.sleep(settings.get("wait_for_page", 3))
+                        ch = _detect_challenge(driver)
+                        if ch:
+                            _handle_detected_challenge(driver, ch, settings)
                     log.info(f"[INFO] Scanning {label} page: {target_url}")
 
                     if purchase_initiated:
@@ -144,14 +251,23 @@ def check_product_and_buy(url, product_name, settings, cc_info, preferred_size=N
                     )
                     if initiated:
                         purchase_initiated = True
+                        if settings.get("stop_on_success", True):
+                            log.info(f"[INFO] Product '{product_name}' buy flow initiated. stop_on_success enabled; ending monitoring loop.")
+                            return True
                         log.info(f"✅ Product '{product_name}' buy flow initiated.")
                         log.info("[INFO] Continuing to keep the session active until you stop monitoring.")
 
                 if not purchase_initiated:
                     log.info(f"⏳ Product '{product_name}' not yet buyable after cycle {cycle}. Refreshing and retrying...")
-                    time.sleep(settings.get("retry_delay", 8))
+                    base = int(settings.get("retry_delay", 8))
+                    jitter = int(settings.get("retry_jitter", 4))
+                    sleep_s = max(1, base + random.randint(-jitter, jitter))
+                    time.sleep(sleep_s)
                     driver.refresh()
                     time.sleep(settings.get("wait_for_page", 2))
+                    ch = _detect_challenge(driver)
+                    if ch:
+                        _handle_detected_challenge(driver, ch, settings)
                 else:
                     time.sleep(settings.get("post_purchase_idle", 15))
             except KeyboardInterrupt:

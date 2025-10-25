@@ -1,7 +1,11 @@
-name:John Doe
-number:4111111111111111
-expiry:12/30
-cvv:123
-address:123 Main St
-city:New York
-zip:10001
+number: 4242424242424242
+expiry: 12/26
+cvv: 123
+name: Jane Doe
+email: jane@example.com
+phone: +15555551234
+address: 123 Main St
+city: San Francisco
+state: CA
+zip: 94105
+country: US

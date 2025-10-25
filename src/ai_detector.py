@@ -11,7 +11,7 @@ import time
 import logging
 from difflib import SequenceMatcher
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import WebDriverException
+from selenium.common.exceptions import WebDriverException, ElementClickInterceptedException
 
 from src.utils import safe_click, highlight_element, wait_for_element, safe_get_text
 
@@ -63,6 +63,23 @@ def find_buy_button_in(element):
         for b in buttons:
             if b.is_displayed():
                 return b
+    except Exception:
+        pass
+    return None
+
+
+def find_buy_button_near(driver, element, max_ancestors=3):
+    """Search for a buy/add CTA near the given element by walking up ancestors."""
+    try:
+        ancestors = element.find_elements(By.XPATH, "./ancestor::*")
+        ancestors = ancestors[:max_ancestors]
+        for anc in ancestors:
+            try:
+                btn = find_buy_button_in(anc)
+                if btn and btn.is_displayed():
+                    return btn
+            except Exception:
+                continue
     except Exception:
         pass
     return None
@@ -155,14 +172,153 @@ def find_global_add_to_cart(driver):
     return None
 
 
+def find_global_buy_ctas(driver):
+    """Return visible buy/add/checkout CTAs across the whole document."""
+    patterns = [
+        r"\badd to bag\b", r"\badd to cart\b", r"\badd to basket\b",
+        r"\bbuy now\b", r"\bbuy\b", r"\bcheckout\b", r"\bpurchase\b",
+        r"\bview bag\b", r"\bview cart\b", r"\bgo to cart\b",
+    ]
+    ctalist = []
+    deny = [
+        "notify me", "coming soon", "sold out", "out of stock",
+        "payment options", "payment methods", "/help/", "help", "faq",
+        "privacy", "terms", "learn more", "sign up", "join", "notify",
+    ]
+    try:
+        ctas = driver.find_elements(By.XPATH, "//button | //a")
+        for c in ctas:
+            try:
+                if not c.is_displayed():
+                    continue
+                txt = (c.text or "").lower()
+                outer = (c.get_attribute("outerHTML") or "").lower()
+                href = (c.get_attribute("href") or "").lower()
+                if any(d in txt or d in outer or d in href for d in deny):
+                    continue
+                if any(re.search(p, txt) or re.search(p, outer) for p in patterns):
+                    ctalist.append(c)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return ctalist
+
+
+def dismiss_banners(driver, settings=None):
+    """Dismiss common cookie/consent banners or overlays to unblock CTAs."""
+    if settings and settings.get("dismiss_banners") is False:
+        return 0
+    dismissed = 0
+    tokens_btn = ["accept", "agree", "allow all", "got it", "ok", "i understand", "continue"]
+    tokens_ctx = ["cookie", "consent", "gdpr", "privacy", "policy"]
+    try:
+        ctas = driver.find_elements(By.XPATH, "//button | //a | //div")
+    except Exception:
+        ctas = []
+    for el in ctas:
+        try:
+            if not el.is_displayed():
+                continue
+            txt = (el.text or "").lower()
+            outer = (el.get_attribute("outerHTML") or "").lower()
+            if any(t in txt for t in tokens_btn) and any(c in outer or c in txt for c in tokens_ctx):
+                if safe_click(driver, el, desc="dismiss_banner"):
+                    dismissed += 1
+        except Exception:
+            continue
+    # generic close
+    try:
+        closes = driver.find_elements(By.XPATH, "//*[@aria-label='Close' or @aria-label='Dismiss' or contains(@class,'close')]")
+        for c in closes:
+            try:
+                if c.is_displayed() and safe_click(driver, c, desc="dismiss_close"):
+                    dismissed += 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return dismissed
+
+
+def page_contains_target(driver, product_name: str) -> bool:
+    try:
+        body = (driver.page_source or "").lower()
+    except Exception:
+        return False
+    tokens = [t for t in product_name.lower().split() if t]
+    return all(tok in body for tok in tokens) if tokens else False
+
+
+def attempt_global_buy_flow(driver, product_name: str, preferred_size: str, settings: dict, cc_info: dict) -> bool:
+    """Attempt a global buy without relying on a matched card: select size if possible, click CTA, checkout and submit."""
+    try:
+        if settings.get("select_size_before_global", True):
+            try:
+                select_size_on_pdp(driver, preferred_size)
+            except Exception:
+                pass
+        buttons = find_global_buy_ctas(driver)
+        if not buttons:
+            return False
+        btn = buttons[0]
+        highlight_element(driver, btn, color="lime", duration=0.8)
+        if safe_click(driver, btn, desc="global_buy_any"):
+            progressed = proceed_to_checkout(driver, settings=settings)
+            if cc_info:
+                try:
+                    from src.form_filler import fill_and_submit_form
+                    time.sleep(1.0 if progressed else 0.7)
+                    fill_and_submit_form(driver, cc_info, settings=settings)
+                except Exception as e:
+                    log.warning(f"[ai_detector] Autofill/checkout failed after global buy: {e}")
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _is_footer(el) -> bool:
+    try:
+        anc = el.find_elements(By.XPATH, "./ancestor::*[self::footer or contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'footer')]")
+        return len(anc) > 0
+    except Exception:
+        return False
+
+
+def _dismiss_overlays(driver) -> int:
+    dismissed = 0
+    selectors = [
+        "//*[@aria-label='Close' or @aria-label='Dismiss']",
+        "//*[contains(@class,'close') or contains(@class,'modal-close') or contains(@class,'overlay-close')]",
+        "//*[@role='dialog']//*[self::button or self::a]",
+        "//*[contains(@class,'modal') or contains(@class,'overlay') or contains(@data-qa,'child-modal')]//button",
+    ]
+    for sx in selectors:
+        try:
+            for el in driver.find_elements(By.XPATH, sx):
+                try:
+                    if el.is_displayed():
+                        el.click()
+                        dismissed += 1
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return dismissed
+
+
 def proceed_to_checkout(driver, settings=None):
     """Attempt to follow any checkout/view-cart CTA after adding to bag."""
     wait_time = (settings or {}).get("checkout_cta_timeout", 10)
     poll_interval = 0.6
     end_time = time.time() + wait_time
     checkout_patterns = [
-        r"checkout", r"bag", r"view bag", r"view cart", r"go to cart",
-        r"proceed", r"continue to checkout", r"buy now", r"pay"
+        r"\bcheckout\b", r"\bview bag\b", r"\bview cart\b", r"\bgo to cart\b",
+        r"\bproceed\b", r"continue to checkout",
+    ]
+    deny = [
+        "payment options", "payment methods", "/help/", "help", "faq", "privacy", "terms", "learn more"
     ]
 
     while time.time() < end_time:
@@ -173,16 +329,29 @@ def proceed_to_checkout(driver, settings=None):
 
         for cta in ctas:
             try:
-                if not cta.is_displayed():
+                if not cta.is_displayed() or _is_footer(cta):
                     continue
                 txt = safe_get_text(cta).lower()
                 outer = (cta.get_attribute("outerHTML") or "").lower()
+                href = (cta.get_attribute("href") or "").lower()
+                if any(d in txt or d in outer or d in href for d in deny):
+                    continue
                 if any(re.search(pattern, txt) or re.search(pattern, outer) for pattern in checkout_patterns):
-                    highlight_element(driver, cta, color="orange", duration=0.8)
-                    if safe_click(driver, cta, desc="checkout_transition"):
-                        log.info("[ai_detector] Checkout/View Cart CTA clicked; waiting for checkout page...")
-                        time.sleep((settings or {}).get("post_checkout_click_wait", 2))
-                        return True
+                    highlight_element(driver, cta, color="orange", duration=0.6)
+                    try:
+                        if safe_click(driver, cta, desc="checkout_transition"):
+                            log.info("[ai_detector] Checkout/View Cart CTA clicked; waiting for checkout page...")
+                            time.sleep((settings or {}).get("post_checkout_click_wait", 2))
+                            return True
+                    except ElementClickInterceptedException:
+                        _dismiss_overlays(driver)
+                        try:
+                            driver.execute_script("arguments[0].click();", cta)
+                            log.info("[ai_detector] JS-clicked checkout CTA after overlay dismissal.")
+                            time.sleep((settings or {}).get("post_checkout_click_wait", 2))
+                            return True
+                        except Exception:
+                            continue
             except Exception:
                 continue
 
@@ -201,10 +370,16 @@ def find_product_and_buy(driver, product_name: str, preferred_size: str = None, 
     Returns True if a buy/add CTA was clicked (and optionally checkout attempted).
     """
     log.info("[ai_detector] Starting search & buy flow...")
+    try:
+        dismissed = dismiss_banners(driver, settings)
+        if dismissed:
+            log.info(f"[ai_detector] Dismissed {dismissed} banner(s).")
+    except Exception:
+        pass
     target = product_name.strip().lower()
-    max_scrolls = settings.get("max_scrolls", 10) if settings else 10
+    max_scrolls = settings.get("max_scrolls", 3) if settings else 3
     scroll_delay = settings.get("scroll_delay", 1.0) if settings else 1.0
-    min_score = settings.get("min_match_score", 0.9) if settings else 0.9
+    min_score = settings.get("min_match_score", 0.7) if settings else 0.7
 
     best_match = None
     best_score = 0.0
@@ -220,6 +395,13 @@ def find_product_and_buy(driver, product_name: str, preferred_size: str = None, 
                 best_match = (el, text, score)
         log.info(f"[ai_detector] Best score so far: {best_score:.2f}")
 
+        # opportunistic: try global CTA if allowed and target is visible somewhere, or forced
+        allow_global_name = (settings or {}).get("allow_global_cta_when_name_found", True)
+        allow_global_any = (settings or {}).get("allow_global_cta_always", False)
+        if allow_global_any or (allow_global_name and page_contains_target(driver, product_name)):
+            if attempt_global_buy_flow(driver, product_name, preferred_size, settings or {}, cc_info or {}):
+                return True
+
         if best_match and best_score >= min_score:
             el, text, score = best_match
             log.info(f"[ai_detector] Possible match (score={score:.2f}): {text[:120]}...")
@@ -232,6 +414,30 @@ def find_product_and_buy(driver, product_name: str, preferred_size: str = None, 
                 highlight_element(driver, buy_btn, color="lime", duration=0.8)
                 if safe_click(driver, buy_btn, desc="inline_buy"):
                     log.info("[ai_detector] Inline buy/add button clicked.")
+                    progressed = proceed_to_checkout(driver, settings=settings)
+                    if cc_info:
+                        try:
+                            from src.form_filler import fill_and_submit_form
+                            time.sleep(1.2 if progressed else 0.8)
+                            fill_and_submit_form(driver, cc_info, settings=settings)
+                        except Exception as e:
+                            log.warning(f"[ai_detector] Autofill/checkout failed after inline buy: {e}")
+                    return True
+
+            # try a nearby CTA if inline not found
+            near_btn = find_buy_button_near(driver, el)
+            if near_btn:
+                highlight_element(driver, near_btn, color="lime", duration=0.8)
+                if safe_click(driver, near_btn, desc="near_buy"):
+                    log.info("[ai_detector] Nearby buy/add button clicked.")
+                    progressed = proceed_to_checkout(driver, settings=settings)
+                    if cc_info:
+                        try:
+                            from src.form_filler import fill_and_submit_form
+                            time.sleep(1.2 if progressed else 0.8)
+                            fill_and_submit_form(driver, cc_info, settings=settings)
+                        except Exception as e:
+                            log.warning(f"[ai_detector] Autofill/checkout failed after near buy: {e}")
                     return True
 
             # open PDP and attempt buy there
@@ -264,7 +470,38 @@ def find_product_and_buy(driver, product_name: str, preferred_size: str = None, 
                         return True
                 else:
                     log.info("[ai_detector] No add-to-cart CTA found on PDP after opening.")
-            # if not clickable / PDP not opened, keep scanning / scroll
+                    # global fallback on PDP: try any visible CTA
+                    globals_cta = find_global_buy_ctas(driver)
+                    if globals_cta:
+                        btn = globals_cta[0]
+                        highlight_element(driver, btn, color="lime", duration=0.8)
+                        if safe_click(driver, btn, desc="global_buy"):
+                            progressed = proceed_to_checkout(driver, settings=settings)
+                            if cc_info:
+                                try:
+                                    from src.form_filler import fill_and_submit_form
+                                    time.sleep(1.2 if progressed else 0.8)
+                                    fill_and_submit_form(driver, cc_info, settings=settings)
+                                except Exception as e:
+                                    log.warning(f"[ai_detector] Autofill/checkout failed after global buy: {e}")
+                            return True
+            # if not clickable / PDP not opened, try a global CTA as last resort
+            globals_cta = find_global_buy_ctas(driver)
+            if globals_cta:
+                btn = globals_cta[0]
+                highlight_element(driver, btn, color="lime", duration=0.8)
+                if safe_click(driver, btn, desc="global_buy_list"):
+                    progressed = proceed_to_checkout(driver, settings=settings)
+                    if cc_info:
+                        try:
+                            from src.form_filler import fill_and_submit_form
+                            time.sleep(1.2 if progressed else 0.8)
+                            fill_and_submit_form(driver, cc_info, settings=settings)
+                        except Exception as e:
+                            log.warning(f"[ai_detector] Autofill/checkout failed after global buy on listing: {e}")
+                    return True
+
+            # if not clickable / no global CTA, keep scanning / scroll
             log.info("[ai_detector] Will continue scanning / scrolling.")
         elif best_match:
             log.info(
