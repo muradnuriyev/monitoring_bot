@@ -1,11 +1,12 @@
 # form_filler.py
 """
-Form filler that attempts to fill checkout / payment forms.
-This is a best-effort helper: websites vary widely; code logs each step.
-Enhancements:
-- Fill common contact + shipping fields (email, phone, address, city, state, zip, country).
-- Handle common card iframes (Stripe/Adyen/Braintree) by switching into frames to input card data.
-- Attempt intermediate CTAs (Continue/Next/Review) before final Pay.
+Checkout form autofill and submission.
+
+This module performs best-effort checkout automation and logs every step. It:
+- Fills common contact + shipping fields (email, phone, address, city, state, zip, country)
+- Handles common payment iframes (Stripe/Adyen/Braintree) and in-page fields
+- Clicks intermediate CTAs (Continue/Next/Review) and checks consent/terms
+- Clicks the final submit (with overlay handling and JS fallback)
 """
 
 import logging
@@ -23,6 +24,7 @@ from src.utils import safe_click, wait_for_element, safe_get_text
 log = logging.getLogger(__name__)
 
 def _normalize_expiry(val: str) -> str:
+    """Normalize expiry formats (e.g., 1226 -> 12/26)."""
     v = (val or "").strip().replace(" ", "").replace("-", "/").replace(".", "/")
     # accept 1226 or 12/26
     if len(v) == 4 and v.isdigit():
@@ -33,6 +35,7 @@ def _normalize_expiry(val: str) -> str:
 
 
 def _try_fill_contact_and_address(driver, cc_info) -> int:
+    """Fill contact + address fields; return count of fields filled."""
     filled = 0
     try:
         inputs = driver.find_elements(By.XPATH, "//input | //textarea | //select")
@@ -321,6 +324,7 @@ def _try_fill_card_iframes(driver, cc_info) -> int:
 
 
 def _scroll_into_view(driver, el):
+    """Scroll element into view to reduce click interception/friction."""
     try:
         driver.execute_script("arguments[0].scrollIntoView({behavior:'smooth', block:'center'});", el)
     except Exception:

@@ -1,5 +1,14 @@
 # monitor.py
-"""Main monitor flow. Keeps browser open for visual inspection and logs each step."""
+"""
+Monitoring and browser orchestration.
+
+This module is responsible for:
+- Creating a Chrome driver (undetected or standard) with stealth-friendly options
+- Detecting and responding to anti-bot challenges conservatively
+- Respecting robots.txt if enabled
+- Cycling through one or more URLs and delegating page actions to the detector
+- Keeping the browser available for inspection unless configured to close
+"""
 
 import time
 import logging
@@ -17,7 +26,14 @@ log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 
 def _build_chrome_options(settings, use_undetected):
-    """Create Chrome options compatible with both selenium and undetected drivers."""
+    """
+    Build a ChromeOptions object compatible with Selenium and undetected-chromedriver.
+
+    Notes
+    - Adds user-agent and language overrides to reduce basic bot signals.
+    - Supports persistent profiles (user_data_dir/profile_directory) to retain cookies.
+    - Allows an optional proxy and minimal window randomization to avoid a fixed fingerprint.
+    """
     options = uc.ChromeOptions() if use_undetected else webdriver.ChromeOptions()
 
     if settings.get("headless", False):
@@ -65,6 +81,14 @@ def _build_chrome_options(settings, use_undetected):
 
 
 def create_driver(settings):
+    """
+    Create and return a Chrome WebDriver.
+
+    Behavior
+    - Tries undetected-chromedriver first (when enabled), then falls back to standard Selenium
+      Chrome if launch fails.
+    - Retries limited times with logs preserved for debugging.
+    """
     attempts = 0
     last_error = None
     use_undetected = settings.get("use_undetected", True)
@@ -99,6 +123,11 @@ def create_driver(settings):
 
 
 def _robots_allows(url: str, user_agent: str = "*"):
+    """Return True if robots.txt allows fetching the given URL for `user_agent`.
+
+    Fail-open: when robots.txt cannot be retrieved, return True to avoid hard blocking
+    (controlled by higher-level settings to stop when disallowed).
+    """
     try:
         parsed = urlparse(url)
         robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
@@ -139,7 +168,14 @@ def _detect_challenge(driver) -> str:
 
 
 def _handle_detected_challenge(driver, kind: str, settings: dict):
-    """Conservative handler: pause and/or wait; never attempts to solve challenges."""
+    """
+    Conservative handler: pause and/or wait; never attempts to solve challenges.
+
+    Strategies
+    - pause: keep session alive and allow manual resolution
+    - wait: poll briefly in case the provider clears after a delay
+    - backoff: sleep with jitter before the next attempt
+    """
     log.warning(f"[WARN] Detected potential anti-bot challenge: {kind}.")
     action = (settings or {}).get("challenge_strategy", "pause")
     if action == "pause":
@@ -167,11 +203,12 @@ def _handle_detected_challenge(driver, kind: str, settings: dict):
 
 
 def _expand_monitor_urls(url):
-    """Return list of URLs to monitor for a product.
+    """
+    Return a small list of equivalent URLs to scan for the same product.
 
-    Nike launches often flip between `/launch/upcoming` and `/launch/in-stock`.
-    Regardless of which variant the user supplied, watch both endpoints so we
-    can react immediately once it becomes buyable.
+    Example: Nike launch pages sometimes flip between `/launch/upcoming` and
+    `/launch/in-stock`. Watching both variants helps react as soon as it becomes
+    buyable.
     """
     urls = [url]
 
@@ -190,6 +227,16 @@ def _expand_monitor_urls(url):
 
 
 def check_product_and_buy(url, product_name, settings, cc_info, preferred_size=None):
+    """
+    High-level monitoring loop for a single product.
+
+    Steps
+    1) Optionally validate robots.txt
+    2) Launch a Chrome session with stealth options
+    3) Cycle through primary/alternate URLs and delegate page actions to the
+       detector (`ai_detector.find_product_and_buy`)
+    4) Stop immediately on first successful buy initiation when `stop_on_success` is true
+    """
     urls_to_monitor = _expand_monitor_urls(url)
     log.info(f"[INFO] Monitoring {product_name} at: {', '.join(urls_to_monitor)}")
     # optional robots.txt compliance

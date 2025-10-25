@@ -1,4 +1,13 @@
 # main.py - console interface (run with `python -m src.main`)
+"""
+Simple CLI to manage products and start monitoring.
+
+Responsibilities
+- Load runtime settings and payment details
+- View/add monitored products
+- Launch the monitor for a selected product
+"""
+
 import os
 import json
 import time
@@ -17,6 +26,7 @@ CC_FILE = os.path.join(CONFIG_DIR, "credit_card_info.txt")
 
 
 def load_settings():
+    """Load settings from config/settings.json or return robust defaults."""
     if not os.path.exists(SETTINGS_FILE):
         return {
             "headless": False,
@@ -52,6 +62,7 @@ def load_settings():
 
 
 def load_credit_card():
+    """Load credit-card and checkout info (key: value per line) into a dict."""
     cc_info = {}
     if not os.path.exists(CC_FILE):
         return cc_info
@@ -64,6 +75,7 @@ def load_credit_card():
 
 
 def load_products():
+    """Load product lines URL|Name|Size and return a list of tuples."""
     prods = []
     if not os.path.exists(PRODUCTS_FILE):
         return prods
@@ -85,6 +97,7 @@ def load_products():
 
 
 def view_products():
+    """Print currently configured products to the console."""
     prods = load_products()
     if not prods:
         print("[INFO] No products configured.")
@@ -95,6 +108,7 @@ def view_products():
 
 
 def add_product():
+    """Prompt the user and append a new product entry to products.txt."""
     url = input("Enter product URL: ").strip()
     name = input("Enter product name: ").strip()
     size = input("Preferred size (optional): ").strip()
@@ -105,6 +119,7 @@ def add_product():
 
 
 def start_monitoring():
+    """Select a product, then start the monitoring + buying flow."""
     prods = load_products()
     if not prods:
         print("[WARN] No products found. Add one first.")
@@ -133,6 +148,7 @@ def start_monitoring():
 
 
 def main_menu():
+    """Main CLI loop for viewing, adding, and starting the monitor."""
     while True:
         print("""
 ===============================

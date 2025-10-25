@@ -1,9 +1,16 @@
 # ai_detector.py
 """
-Adaptive site-agnostic product detector + buyer helper.
-This file's API:
-  find_product_and_buy(driver, product_name, preferred_size=None, settings=None, cc_info=None)
-Returns True if buy flow initiated (Add to Bag / Buy clicked and (optionally) checkout attempted).
+Adaptive site-agnostic product detector and buyer helper.
+
+Responsibilities
+- Locate the target product on listing/PDP pages via fuzzy text matching
+- Trigger purchase by clicking inline/near/global CTAs (avoid footer/help/notify links)
+- Push the flow toward checkout and hand off to the form filler
+- Provide conservative banner/overlay dismissal for better click success
+
+Public API
+- find_product_and_buy(driver, product_name, preferred_size=None, settings=None, cc_info=None)
+  Returns True if a buy/add CTA was clicked (and optionally checkout attempted).
 """
 
 import re
@@ -18,6 +25,7 @@ from src.utils import safe_click, highlight_element, wait_for_element, safe_get_
 log = logging.getLogger(__name__)
 
 def similar(a: str, b: str) -> float:
+    """Case-insensitive similarity score between two strings (0.0–1.0)."""
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 def extract_candidate_cards(driver, limit=400):
@@ -41,6 +49,7 @@ def extract_candidate_cards(driver, limit=400):
     return candidates
 
 def scroll_into_view_and_wait(driver, el, pause=0.8):
+    """Scroll the element into view and pause briefly to allow layout settle."""
     try:
         driver.execute_script("arguments[0].scrollIntoView({behavior:'smooth', block:'center'});", el)
         time.sleep(pause)
@@ -52,6 +61,7 @@ def scroll_into_view_and_wait(driver, el, pause=0.8):
             pass
 
 def find_buy_button_in(element):
+    """Find a likely buy/add button within the provided element subtree."""
     try:
         # prefer buttons then links
         buttons = element.find_elements(By.XPATH, ".//button | .//a")

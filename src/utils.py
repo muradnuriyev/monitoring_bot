@@ -1,4 +1,14 @@
 # utils.py
+"""
+Small Selenium helper utilities used across the project.
+
+Includes:
+- safe_click: click with logging and basic error handling
+- wait_for_element: presence wait wrapper
+- highlight_element: temporary outline to visualize targets during debug
+- safe_get_text: robust text extractor
+"""
+
 import time
 import logging
 from selenium.webdriver.common.by import By
@@ -10,7 +20,7 @@ logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 log = logging.getLogger(__name__)
 
 def safe_click(driver, element, desc=None, timeout=0.5):
-    """Attempt to click an element; log every attempt and exception."""
+    """Attempt to click an element; log every attempt and any exception path."""
     try:
         desc_text = f" ({desc})" if desc else ""
         log.info(f"[ACTION] Clicking element{desc_text}: text='{element.text[:60]}'")
@@ -29,6 +39,7 @@ def safe_click(driver, element, desc=None, timeout=0.5):
         return False
 
 def wait_for_element(driver, by, selector, timeout=10):
+    """Wait for an element to be present; return the element or None on timeout."""
     try:
         return WebDriverWait(driver, timeout).until(EC.presence_of_element_located((by, selector)))
     except TimeoutException:
@@ -36,7 +47,7 @@ def wait_for_element(driver, by, selector, timeout=10):
         return None
 
 def highlight_element(driver, element, color="red", duration=1.0):
-    """Visually outline element (for debugging), non-fatal if fails."""
+    """Visually outline element (for debugging), non-fatal if it fails."""
     try:
         driver.execute_script("""
             const el = arguments[0];
@@ -48,6 +59,7 @@ def highlight_element(driver, element, color="red", duration=1.0):
         pass
 
 def safe_get_text(el):
+    """Return stripped element text, or empty string on any exception."""
     try:
         return el.text.strip()
     except Exception:
